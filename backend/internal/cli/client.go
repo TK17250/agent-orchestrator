@@ -159,6 +159,27 @@ func (c *commandContext) doJSONPathWithHeaders(
 	return c.doJSONPathWithHeadersAndTimeout(ctx, method, path, body, out, headers, commandTimeout)
 }
 
+// daemonBaseURL resolves the running daemon's loopback origin from the run
+// file. A missing or stale run file is reported as errDaemonNotRunning so
+// callers can point the user at `ao start`.
+func (c *commandContext) daemonBaseURL() (string, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	info, err := runfile.Read(cfg.RunFilePath)
+	if err != nil {
+		return "", err
+	}
+	if info == nil {
+		return "", daemonUnavailableError{message: "Orchestrator daemon is not running — start it with `ao start`", cause: errDaemonNotRunning}
+	}
+	if !c.deps.ProcessAlive(info.PID) {
+		return "", daemonUnavailableError{message: fmt.Sprintf("Orchestrator daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath), cause: errDaemonNotRunning}
+	}
+	return fmt.Sprintf("http://%s:%d", config.LoopbackHost, info.Port), nil
+}
+
 func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	ctx context.Context,
 	method, path string,
@@ -166,19 +187,9 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 	headers map[string]string,
 	timeout time.Duration,
 ) error {
-	cfg, err := config.Load()
+	base, err := c.daemonBaseURL()
 	if err != nil {
 		return err
-	}
-	info, err := runfile.Read(cfg.RunFilePath)
-	if err != nil {
-		return err
-	}
-	if info == nil {
-		return daemonUnavailableError{message: "Orchestrator daemon is not running — start it with `ao start`", cause: errDaemonNotRunning}
-	}
-	if !c.deps.ProcessAlive(info.PID) {
-		return daemonUnavailableError{message: fmt.Sprintf("Orchestrator daemon is not running (stale run-file at %s) — start it with `ao start`", cfg.RunFilePath), cause: errDaemonNotRunning}
 	}
 
 	var reader io.Reader = http.NoBody
@@ -189,7 +200,7 @@ func (c *commandContext) doJSONPathWithHeadersAndTimeout(
 		}
 		reader = bytes.NewReader(payload)
 	}
-	url := fmt.Sprintf("http://%s:%d%s", config.LoopbackHost, info.Port, path)
+	url := base + path
 	req, err := http.NewRequestWithContext(ctx, method, url, reader) // #nosec G704 -- daemon host is fixed loopback; path is an internal API route.
 	if err != nil {
 		return err

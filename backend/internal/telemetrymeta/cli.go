@@ -138,6 +138,7 @@ var legacyActorlessUserCLICommands = map[string]struct{}{
 	"ao cue":                    {},
 	"ao cue create":             {},
 	"ao cue list":               {},
+	"ao dash":                   {},
 	"ao dev":                    {},
 	"ao dev import-projects":    {},
 	"ao doctor":                 {},
