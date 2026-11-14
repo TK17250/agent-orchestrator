@@ -33,6 +33,7 @@ const (
 	modeKill
 	modeSpawn
 	modeHelp
+	modeQuit
 )
 
 const (
@@ -64,6 +65,13 @@ type (
 		// selectID moves the selection to a newly created session.
 		selectID string
 	}
+	dashQuitPlanMsg struct {
+		plan dashQuitPlan
+		err  error
+	}
+	// dashSignalMsg asks the dashboard to quit because of a signal (SIGTERM,
+	// SIGHUP when the terminal closes): there is no one left to ask.
+	dashSignalMsg struct{}
 )
 
 type dashModel struct {
@@ -107,6 +115,13 @@ type dashModel struct {
 	busy     string
 	flash    string
 	flashErr bool
+
+	// planQuit, when set, is asked whether quitting needs a confirmation
+	// because this exit would stop a daemon with sessions mid-turn.
+	planQuit func(context.Context) (dashQuitPlan, error)
+	quitPlan dashQuitPlan
+	// exitChoice is read by the command after the program ends.
+	exitChoice dashExitChoice
 }
 
 func newDashModel(ctx context.Context, backend dashBackend, scope string, stream <-chan dashStreamEvent, now func() time.Time) dashModel {
@@ -263,6 +278,20 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd := m.startRefresh()
 		return m, cmd
+	case dashQuitPlanMsg:
+		m.busy = ""
+		if msg.err == nil && msg.plan.NeedsConfirm {
+			m.mode = modeQuit
+			m.quitPlan = msg.plan
+			return m, nil
+		}
+		// Without a plan the command decides on exit and keeps a daemon that
+		// has sessions mid-turn, so quitting here is always safe.
+		m.exitChoice = exitAutomatic
+		return m, tea.Quit
+	case dashSignalMsg:
+		m.exitChoice = exitAutomatic
+		return m, tea.Quit
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -313,8 +342,11 @@ func (m *dashModel) setFlash(text string, isErr bool) {
 
 func (m dashModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	keyName := msg.String()
+	if m.mode == modeQuit {
+		return m.handleQuitKey(keyName)
+	}
 	if keyName == "ctrl+c" {
-		return m, tea.Quit
+		return m.requestQuit()
 	}
 	switch m.mode {
 	case modeHelp:
@@ -336,7 +368,7 @@ func (m dashModel) handleBrowseKey(keyName string) (tea.Model, tea.Cmd) {
 	m.flash = ""
 	switch keyName {
 	case "q":
-		return m, tea.Quit
+		return m.requestQuit()
 	case "?":
 		m.mode = modeHelp
 	case "tab", "shift+tab":
@@ -428,6 +460,44 @@ func (m dashModel) openDetail() (tea.Model, tea.Cmd) {
 	}
 	m.detailLoading = true
 	return m, m.fetchDetail(sess)
+}
+
+// requestQuit asks the planner whether this exit would stop a daemon with
+// sessions mid-turn, and quits straight away when there is nothing to ask.
+func (m dashModel) requestQuit() (tea.Model, tea.Cmd) {
+	if m.planQuit == nil {
+		m.exitChoice = exitAutomatic
+		return m, tea.Quit
+	}
+	if m.busy == "Checking sessions…" {
+		return m, nil
+	}
+	m.mode = modeBrowse
+	m.busy = "Checking sessions…"
+	plan, ctx := m.planQuit, m.ctx
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(ctx, dashFetchTimeout)
+		defer cancel()
+		p, err := plan(ctx)
+		return dashQuitPlanMsg{plan: p, err: err}
+	}
+}
+
+// handleQuitKey answers the stop-the-daemon confirmation. Stopping is the
+// default; ctrl+c leaves without stopping anything.
+func (m dashModel) handleQuitKey(keyName string) (tea.Model, tea.Cmd) {
+	switch keyName {
+	case "enter", "s", "y":
+		m.exitChoice = exitStopDaemon
+		return m, tea.Quit
+	case "k", "ctrl+c":
+		m.exitChoice = exitKeepDaemon
+		return m, tea.Quit
+	case "esc", "c", "n", "q":
+		m.mode = modeBrowse
+		m.setFlash("Quit cancelled", false)
+	}
+	return m, nil
 }
 
 func (m dashModel) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

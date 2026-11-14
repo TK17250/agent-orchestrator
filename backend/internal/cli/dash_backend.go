@@ -41,6 +41,9 @@ type dashSessionDTO struct {
 	DisplayStatus  string    `json:"displayStatus,omitempty"`
 	ProvisionState string    `json:"provisionState,omitempty"`
 	LastEventAt    time.Time `json:"lastEventAt"`
+	// ChatProviderPreserved reports a live persistent Chat host that outlives
+	// the daemon; false also covers unknown ownership.
+	ChatProviderPreserved bool `json:"chatProviderPreserved"`
 }
 
 type dashSessionListResponse struct {
@@ -60,6 +63,8 @@ type dashSession struct {
 type dashSnapshot struct {
 	Projects []projectSummary
 	Sessions []dashSession
+	// DaemonRole describes who started the daemon, for the header.
+	DaemonRole string
 }
 
 // dashReport mirrors controllers.ReportResponse.
@@ -110,6 +115,8 @@ const (
 
 type httpDashBackend struct {
 	c *commandContext
+	// daemon, when set, reports the daemon role for the header.
+	daemon *dashDaemon
 }
 
 func (b httpDashBackend) Snapshot(ctx context.Context, project string) (dashSnapshot, error) {
@@ -118,6 +125,9 @@ func (b httpDashBackend) Snapshot(ctx context.Context, project string) (dashSnap
 		return dashSnapshot{}, err
 	}
 	snap := dashSnapshot{Projects: projects.Projects}
+	if b.daemon != nil {
+		snap.DaemonRole = b.daemon.Role()
+	}
 	if project != "" {
 		snap.Projects = nil
 		for _, p := range projects.Projects {
@@ -271,7 +281,9 @@ func (b httpDashBackend) streamOnce(ctx context.Context, project string, out cha
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/v1/events?after=latest", http.NoBody) // #nosec G704 -- fixed loopback daemon URL.
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, base+"/api/v1/events?after=latest", http.NoBody) // #nosec G704 -- fixed loopback daemon URL.
 	if err != nil {
 		return err
 	}
@@ -289,6 +301,7 @@ func (b httpDashBackend) streamOnce(ctx context.Context, project string, out cha
 	if !dashEmit(ctx, out, dashStreamEvent{Connected: true}) {
 		return ctx.Err()
 	}
+	go dashWatchListener(streamCtx, cancel, base)
 	return readDashEvents(resp.Body, project, func() {
 		// A full buffer already holds a pending change; dropping is coalescing.
 		select {
@@ -296,6 +309,48 @@ func (b httpDashBackend) streamOnce(ctx context.Context, project string, out cha
 		default:
 		}
 	})
+}
+
+// dashListenerProbeInterval paces the listener probe. A var so tests can
+// shorten it.
+var dashListenerProbeInterval = 3 * time.Second
+
+// dashWatchListener drops the stream once the daemon stops accepting new
+// connections. A daemon shutting down closes its listener at once but keeps
+// serving open streams until its graceful timeout, and while this stream stays
+// open the daemon cannot exit: a desktop app replacing a dash-started daemon
+// would wait for it. Two failed probes in a row end the stream; Watch then
+// reconnects to whichever daemon is running next.
+func dashWatchListener(ctx context.Context, cancel context.CancelFunc, base string) {
+	client := &http.Client{Timeout: probeTimeout, Transport: &http.Transport{DisableKeepAlives: true}}
+	ticker := time.NewTicker(dashListenerProbeInterval)
+	defer ticker.Stop()
+	failures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/healthz", http.NoBody) // #nosec G704 -- fixed loopback daemon URL.
+		if err != nil {
+			return
+		}
+		resp, err := client.Do(req) // #nosec G704 -- fixed loopback daemon URL.
+		if err == nil {
+			_ = resp.Body.Close()
+			failures = 0
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		failures++
+		if failures >= 2 {
+			cancel()
+			return
+		}
+	}
 }
 
 // readDashEvents parses an SSE body and calls changed for each data event that

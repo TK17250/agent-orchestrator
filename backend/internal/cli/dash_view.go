@@ -361,6 +361,9 @@ func (m dashModel) renderHeader(width int) string {
 	default:
 		conn = dashMuted.Render("○ Polling")
 	}
+	if role := dashClean(m.snap.DaemonRole); role != "" {
+		conn = dashMuted.Render(role+" · ") + conn
+	}
 	right := conn
 	if m.loaded {
 		working, needYou := 0, 0
@@ -454,6 +457,8 @@ func (m dashModel) renderMain(w, h int) []string {
 	switch {
 	case m.mode == modeHelp:
 		return append(lines, m.renderHelp(w)...)
+	case m.mode == modeQuit:
+		return append(lines, m.renderQuit(w)...)
 	case m.mode == modeSend:
 		return append(lines, m.renderSend(w)...)
 	case m.mode == modeKill:
@@ -840,6 +845,31 @@ func (m dashModel) renderSpawn(w int) []string {
 	}, strings.Split(m.spawnPrompt.View(), "\n")...)
 }
 
+// renderQuit asks before stopping a daemon that has sessions mid-turn.
+func (m dashModel) renderQuit(w int) []string {
+	f := m.quitPlan.InFlight
+	lines := []string{
+		dashBold.Render(fitText("Stop the Orchestrator daemon?", w)),
+		"",
+		fmt.Sprintf("ao dash started this daemon, and %d session%s %s mid-turn:", f.Total(), pluralS(f.Total()), isAre(f.Total())),
+	}
+	if f.Interrupted > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(dashColorNeedsYou).Render(
+			fmt.Sprintf("  %d Chat session%s would be interrupted: the agent stops with the daemon.", f.Interrupted, pluralS(f.Interrupted))))
+	}
+	if n := f.Unsupervised; n > 0 {
+		verb, pronoun := "keep", "them"
+		if n == 1 {
+			verb, pronoun = "keeps", "it"
+		}
+		lines = append(lines, fmt.Sprintf("  %d %s running, but AO stops tracking %s until the daemon starts again.", n, verb, pronoun))
+	}
+	return append(lines, "",
+		"enter  Stop the daemon",
+		"k      Keep it running in the background (stop it later with `ao stop`)",
+		"esc    Cancel and stay in the dashboard")
+}
+
 func (m dashModel) renderHelp(w int) []string {
 	rows := [][2]string{
 		{"j / k, ↓ / ↑", "Move in the focused pane"},
@@ -889,6 +919,8 @@ func (m dashModel) renderFooter(width int) string {
 		hints = "tab switch field · enter next / start · ctrl+j newline · esc cancel"
 	case modeHelp:
 		hints = "any key closes help"
+	case modeQuit:
+		hints = "enter stop daemon · k keep it running · esc cancel"
 	default:
 		switch {
 		case m.focus == paneProjects:
