@@ -79,6 +79,7 @@ without a terminal runs it in the background and reads its output; see
 | `ao automation create/list/get/update/delete/runs` | `POST/GET/PATCH/DELETE /api/v1/automations` |
 | `ao cue create/list`                | `POST/GET /api/v1/projects/{id}/cues`         |
 | `ao spawn`                          | Targeted launch ensure, then `POST /api/v1/sessions` |
+| `ao dash`                           | Interactive terminal dashboard over `GET /api/v1/projects`, `GET /api/v1/sessions`, per-session PR summaries, and `GET /api/v1/events`. Starts a daemon when none runs and stops it on quit unless something else uses it; see [`ao dash`](dash.md). |
 | `ao session ls`                     | `GET /api/v1/sessions` plus per-session PR summaries; shows branch, PR, CI, review, unresolved threads, activity, and age. |
 | `ao session get <id>`               | `GET /api/v1/sessions/{id}`. `--transcript N` also reads `GET /api/v1/sessions/{id}/conversation` for chat sessions on the local daemon. |
 | `ao session kill <id>`              | `POST /api/v1/sessions/{id}/kill`              |

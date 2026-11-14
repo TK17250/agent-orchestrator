@@ -191,18 +191,10 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				DisplayNameExplicit: true,
 				Async:               !opts.standalone,
 			}
-			var res spawnResult
-			if err := ctx.postSetupJSON(cmd.Context(), "sessions", req, &res); err != nil {
-				return err
-			}
-			if strings.TrimSpace(res.Session.ID) == "" {
-				return fmt.Errorf("daemon returned empty session id for spawn")
-			}
-			started, err := ctx.awaitSpawnStart(cmd.Context(), res.Session)
+			res, err := ctx.submitSpawn(cmd.Context(), req)
 			if err != nil {
 				return err
 			}
-			res.Session = started
 			claimed := ""
 			var claim claimPRResponse
 			if opts.claimPR != "" {
@@ -264,6 +256,24 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.BoolVar(&opts.noTakeover, "no-takeover", false, "Refuse if another active session owns the claimed PR (requires --claim-pr)")
 	f.BoolVar(&opts.skipAgentCheck, "skip-agent-check", false, "Skip CLI readiness warnings (the daemon still validates launch readiness)")
 	return cmd
+}
+
+// submitSpawn creates the session and waits for a background start to settle.
+// It is shared by `ao spawn` and the `ao dash` new-worker action.
+func (c *commandContext) submitSpawn(ctx context.Context, req spawnRequest) (spawnResult, error) {
+	var res spawnResult
+	if err := c.postSetupJSON(ctx, "sessions", req, &res); err != nil {
+		return spawnResult{}, err
+	}
+	if strings.TrimSpace(res.Session.ID) == "" {
+		return spawnResult{}, fmt.Errorf("daemon returned empty session id for spawn")
+	}
+	started, err := c.awaitSpawnStart(ctx, res.Session)
+	if err != nil {
+		return res, err
+	}
+	res.Session = started
+	return res, nil
 }
 
 // spawnStartPollInterval paces the wait for a session started in the background.

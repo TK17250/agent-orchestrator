@@ -725,9 +725,8 @@ func (c *commandContext) killSession(ctx context.Context, cmd *cobra.Command, id
 			return err
 		}
 	}
-	var res killSessionResponse
-	req := killSessionRequest{CallerSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID"))}
-	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/kill", req, &res); err != nil {
+	res, err := c.postKillSession(ctx, id)
+	if err != nil {
 		return err
 	}
 	if res.CleanupPending {
@@ -740,8 +739,19 @@ func (c *commandContext) killSession(ctx context.Context, cmd *cobra.Command, id
 	}
 	// freed=false: the workspace was preserved (e.g. uncommitted changes) — the
 	// session is terminated either way, but the worktree is left for inspection.
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s killed (workspace preserved)\n", res.SessionID)
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "session %s killed (workspace preserved)\n", res.SessionID)
 	return err
+}
+
+// postKillSession asks the daemon to terminate one session. It is shared by
+// `ao session kill` and the `ao dash` kill action.
+func (c *commandContext) postKillSession(ctx context.Context, id string) (killSessionResponse, error) {
+	var res killSessionResponse
+	req := killSessionRequest{CallerSessionID: strings.TrimSpace(os.Getenv("AO_SESSION_ID"))}
+	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/kill", req, &res); err != nil {
+		return killSessionResponse{}, err
+	}
+	return res, nil
 }
 
 func (c *commandContext) deleteSession(ctx context.Context, cmd *cobra.Command, id string, opts sessionDeleteOptions) error {
